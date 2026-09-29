@@ -535,6 +535,45 @@ class TestConnectionSuccessfulIdempotency:
     """
 
     @pytest.mark.asyncio
+    async def test_on_chat_resume_not_duplicated_on_reconnect(
+        self, mock_session_factory
+    ):
+        """A live session reconnect must not reload its persisted thread."""
+        session = mock_session_factory(has_first_interaction=False)
+        session.restored = False
+        session.thread_id_to_resume = "thread-1"
+        session.chat_started = False
+
+        mock_context = Mock()
+        mock_context.session = session
+        mock_context.emitter = AsyncMock()
+
+        mock_config = Mock()
+        mock_config.code.on_chat_start = None
+        mock_config.code.on_chat_resume = AsyncMock()
+        thread = {"id": "thread-1", "steps": [{"type": "user_message"}]}
+
+        with (
+            patch("chainlit.socket.init_ws_context", return_value=mock_context),
+            patch("chainlit.socket.config", mock_config),
+            patch(
+                "chainlit.socket.resume_thread", new_callable=AsyncMock
+            ) as load_thread,
+            patch("chainlit.socket.Message.from_dict") as from_dict,
+            patch("chainlit.socket.chat_context.add") as add_to_chat_context,
+        ):
+            load_thread.return_value = thread
+            await connection_successful("sid-1")
+            session.restored = True
+            await connection_successful("sid-2")
+
+        load_thread.assert_awaited_once_with(session)
+        mock_config.code.on_chat_resume.assert_awaited_once_with(thread)
+        mock_context.emitter.resume_thread.assert_awaited_once_with(thread)
+        from_dict.assert_called_once_with(thread["steps"][0])
+        add_to_chat_context.assert_called_once_with(from_dict.return_value)
+
+    @pytest.mark.asyncio
     async def test_on_chat_start_not_duplicated_on_reconnect(
         self, mock_session_factory
     ):

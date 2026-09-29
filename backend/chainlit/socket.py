@@ -213,8 +213,12 @@ async def connection_successful(sid):
     await context.emitter.clear("clear_ask")
     await context.emitter.clear("clear_call_fn")
 
-    if context.session.restored and not context.session.has_first_interaction:
-        if config.code.on_chat_start and not context.session.chat_started:
+    if context.session.restored:
+        if (
+            not context.session.has_first_interaction
+            and config.code.on_chat_start
+            and not context.session.chat_started
+        ):
             context.session.chat_started = True
             task = asyncio.create_task(config.code.on_chat_start())
             context.session.current_task = task
