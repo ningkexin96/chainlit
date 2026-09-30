@@ -66,9 +66,11 @@ const UserMessage = memo(function UserMessage({
     <div className="flex flex-col w-full gap-1">
       <InlinedElements elements={inlineElements} className="items-end" />
 
-      <div className={cn('flex', editable ? 'justify-start' : 'justify-end')}>
-        <MessageTimestamp createdAt={message.createdAt} />
-      </div>
+      {config?.ui?.show_message_timestamps ? (
+        <div className="flex justify-end">
+          <MessageTimestamp createdAt={message.createdAt} />
+        </div>
+      ) : null}
 
       <div className="flex flex-row items-center gap-1 w-full group">
         {!isEditing && editable && (

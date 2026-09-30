@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MessageTimestamp } from '@/components/chat/Messages/Message/MessageTimestamp';
@@ -31,9 +31,10 @@ describe('MessageTimestamp', () => {
     const createdAt = '2026-09-30T08:00:00.000Z';
     const date = new Date(createdAt);
 
-    render(<MessageTimestamp createdAt={createdAt} />);
+    const { container } = render(<MessageTimestamp createdAt={createdAt} />);
 
-    const timestamp = screen.getByRole('time');
+    const timestamp = container.querySelector('time');
+    expect(timestamp).not.toBeNull();
     expect(timestamp).toHaveAttribute('datetime', date.toISOString());
     expect(timestamp).toHaveAttribute('aria-label', date.toLocaleString());
     expect(timestamp).toHaveTextContent(
