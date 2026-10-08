@@ -667,3 +667,90 @@ class TestConnectionSuccessfulIdempotency:
             await connection_successful("sid-1")
 
         assert on_chat_start.call_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("interrupt_resume", [False, True])
+    async def test_pending_thread_resumed_on_reconnect(
+        self, persisted_test_user, interrupt_resume
+    ):
+        """Reconnect must finish a pending resume before treating the session as live."""
+        from chainlit.chat_context import chat_context
+        from chainlit.context import context_var
+
+        emit = AsyncMock()
+        emit_call = AsyncMock()
+        on_chat_resume = AsyncMock(
+            side_effect=[RuntimeError("Resume interrupted"), None]
+            if interrupt_resume
+            else None
+        )
+        thread = {
+            "id": "thread-1",
+            "userIdentifier": persisted_test_user.identifier,
+            "metadata": {},
+            "steps": [
+                {
+                    "id": "message-1",
+                    "threadId": "thread-1",
+                    "type": "user_message",
+                    "name": "User",
+                    "createdAt": "2026-09-29T00:00:00Z",
+                    "output": "Persisted message",
+                }
+            ],
+        }
+        data_layer = AsyncMock()
+        data_layer.get_thread.return_value = thread
+
+        with (
+            patch.dict("chainlit.session.ws_sessions_id", clear=True),
+            patch.dict("chainlit.session.ws_sessions_sid", clear=True),
+            patch.dict("chainlit.chat_context.chat_contexts", clear=True),
+            patch.dict("chainlit.user_session.user_sessions", clear=True),
+            patch("chainlit.socket.get_data_layer", return_value=data_layer),
+            patch("chainlit.socket.config.code.on_chat_resume", on_chat_resume),
+            patch("chainlit.socket.config.code.on_chat_start", None),
+        ):
+            session = WebsocketSession(
+                id="session-1",
+                socket_id="sid-1",
+                emit=emit,
+                emit_call=emit_call,
+                user_env={},
+                client_type="webapp",
+                thread_id="thread-1",
+                user=persisted_test_user,
+            )
+            context_token = context_var.set(None)
+            try:
+                if interrupt_resume:
+                    with pytest.raises(RuntimeError, match="Resume interrupted"):
+                        await connection_successful("sid-1")
+                    assert session.thread_id_to_resume == "thread-1"
+
+                # The first socket disappears before its successful resume.
+                assert restore_existing_session(
+                    "sid-2", session.id, emit, emit_call, {}, user=session.user
+                )
+                await connection_successful("sid-2")
+                assert chat_context.to_openai() == [
+                    {"role": "user", "content": "Persisted message"}
+                ]
+
+                # Once loaded, further reconnects must not replay the thread.
+                assert restore_existing_session(
+                    "sid-3", session.id, emit, emit_call, {}, user=session.user
+                )
+                await connection_successful("sid-3")
+                assert chat_context.to_openai() == [
+                    {"role": "user", "content": "Persisted message"}
+                ]
+            finally:
+                context_var.reset(context_token)
+
+        expected_attempts = 2 if interrupt_resume else 1
+        assert data_layer.get_thread.await_count == expected_attempts
+        assert on_chat_resume.await_count == expected_attempts
+        assert (
+            sum(call.args[0] == "resume_thread" for call in emit.await_args_list) == 1
+        )

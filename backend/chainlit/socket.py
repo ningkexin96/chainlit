@@ -213,7 +213,7 @@ async def connection_successful(sid):
     await context.emitter.clear("clear_ask")
     await context.emitter.clear("clear_call_fn")
 
-    if context.session.restored:
+    if context.session.restored and not context.session.thread_id_to_resume:
         if (
             not context.session.has_first_interaction
             and config.code.on_chat_start
@@ -239,6 +239,7 @@ async def connection_successful(sid):
                     chat_context.add(Message.from_dict(step))
 
             await context.emitter.resume_thread(thread)
+            context.session.thread_id_to_resume = None
             return
         else:
             await context.emitter.send_resume_thread_error("Thread not found.")
