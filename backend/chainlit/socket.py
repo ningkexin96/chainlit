@@ -227,10 +227,12 @@ async def connection_successful(sid):
 
         if context.session.thread_id_to_resume and config.code.on_chat_resume:
             thread = context.session._resumed_thread
+            interaction_sid = None
             if thread is None:
                 thread = await resume_thread(context.session)
                 if thread:
                     context.session.has_first_interaction = True
+                    interaction_sid = context.session.socket_id
                     await context.emitter.emit(
                         "first_interaction",
                         {"interaction": "resume", "thread_id": thread.get("id")},
@@ -245,7 +247,20 @@ async def connection_successful(sid):
                     context.session._resumed_thread = thread
 
             if thread:
+                delivery_sid = context.session.socket_id
+                if not sio.manager.is_connected(delivery_sid, "/"):
+                    return
+                if interaction_sid != delivery_sid:
+                    await context.emitter.emit(
+                        "first_interaction",
+                        {"interaction": "resume", "thread_id": thread.get("id")},
+                    )
                 await context.emitter.resume_thread(thread)
+                if (
+                    context.session.socket_id != delivery_sid
+                    or not sio.manager.is_connected(delivery_sid, "/")
+                ):
+                    return
                 context.session.thread_id_to_resume = None
                 context.session._resumed_thread = None
                 return

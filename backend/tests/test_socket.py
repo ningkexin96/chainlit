@@ -535,12 +535,21 @@ class TestConnectionSuccessfulIdempotency:
     Refs chainlit#2535, chainlit#2549, chainlit#2228.
     """
 
+    @pytest.fixture(autouse=True)
+    def socket_is_connected(self):
+        # Sessions in these unit tests represent connected Socket.IO clients.
+        with patch(
+            "chainlit.socket.sio.manager.is_connected", return_value=True
+        ) as connected:
+            yield connected
+
     @pytest.mark.asyncio
     async def test_on_chat_resume_not_duplicated_on_reconnect(
         self, mock_session_factory
     ):
         """A live session reconnect must not reload its persisted thread."""
         session = mock_session_factory(has_first_interaction=False)
+        session.socket_id = "sid-1"
         session.restored = False
         session.thread_id_to_resume = "thread-1"
         session.chat_started = False
@@ -797,12 +806,15 @@ class TestConnectionSuccessfulIdempotency:
         callback_started = asyncio.Event()
         finish_resume = asyncio.Event()
         reconnect_ready = asyncio.Event()
+        interaction_sids = []
 
         async def resume(thread):
             callback_started.set()
             await finish_resume.wait()
 
         async def emit(event, data):
+            if event == "first_interaction":
+                interaction_sids.append(session.socket_id)
             if session.restored and event == "clear_call_fn":
                 reconnect_ready.set()
 
@@ -840,3 +852,73 @@ class TestConnectionSuccessfulIdempotency:
             )
             == 1
         )
+
+        assert interaction_sids == ["sid-1", "sid-2"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("loss_stage", ["callback", "delivery", "new_socket"])
+    async def test_silent_resume_delivery_retried_after_disconnect(
+        self, pending_resume, socket_is_connected, loss_stage
+    ):
+        """A silent emit to a dropped socket must leave the restore pending."""
+        from chainlit.chat_context import chat_context
+
+        session, thread, data_layer, on_chat_resume = pending_resume
+        connected = {"sid-1"}
+        delivered = []
+        interactions = []
+        socket_is_connected.side_effect = lambda sid, namespace: sid in connected
+
+        async def resume(_thread):
+            if loss_stage == "callback":
+                connected.discard("sid-1")
+
+        async def first_emit(event, data):
+            if event == "resume_thread":
+                connected.discard("sid-1")
+                if loss_stage == "new_socket":
+                    connected.add("sid-2")
+                    restore_existing_session(
+                        "sid-2",
+                        session.id,
+                        session.emit,
+                        session.emit_call,
+                        {},
+                        user=session.user,
+                    )
+                # Socket.IO emits to empty rooms without raising.
+
+        on_chat_resume.side_effect = resume
+        session.emit.side_effect = first_emit
+        await connection_successful("sid-1")
+        assert session.thread_id_to_resume == "thread-1"
+        assert session._resumed_thread is thread
+
+        async def second_emit(event, data):
+            if event == "resume_thread":
+                delivered.append(data)
+            elif event == "first_interaction":
+                interactions.append(data)
+
+        connected.add("sid-2")
+        assert restore_existing_session(
+            "sid-2",
+            session.id,
+            AsyncMock(side_effect=second_emit),
+            session.emit_call,
+            {},
+            user=session.user,
+        )
+        await connection_successful("sid-2")
+        assert delivered == [thread]
+        assert interactions == [{"interaction": "resume", "thread_id": "thread-1"}]
+        assert session.thread_id_to_resume is None
+        assert session._resumed_thread is None
+        data_layer.get_thread.assert_awaited_once_with(thread_id="thread-1")
+        on_chat_resume.assert_awaited_once_with(thread)
+        assert chat_context.to_openai() == [
+            {"role": "user", "content": "Persisted message"}
+        ]
+
+        await connection_successful("sid-2")
+        assert delivered == [thread]
